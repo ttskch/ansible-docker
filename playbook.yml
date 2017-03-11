@@ -1,0 +1,104 @@
+- hosts: all
+  gather_facts: no
+  vars:
+    user: ubuntu
+    docker_repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable
+
+  tasks:
+    - name: install packages
+      apt: name="{{ item }}" update_cache=yes
+      with_items:
+        - curl
+        - vim
+        - git
+        - unzip
+        - composer
+
+    - name: create user
+      user: name="{{ user }}" shell=/bin/bash groups=sudo password="{{ lookup('pipe', 'php generate_password_hash.php') }}"
+
+    - name: authorize local ssh-key for user
+      authorized_key:
+        user: "{{ user }}"
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+
+    # install docker
+    # @see https://docs.docker.com/engine/installation/linux/ubuntu/
+    - name: remove old docker
+      apt: name="{{ item }}" state=absent
+      with_items:
+        - docker
+        - docker-engine
+
+    - name: install packages to prepare for installing docker
+      apt: name="{{ item }}" update_cache=yes
+      with_items:
+        - linux-image-extra-virtual
+        - apt-transport-https
+        - ca-certificates
+        - software-properties-common
+
+    - name: install environment specific package
+      shell: apt-get install -y linux-image-extra-$(uname -r)
+      register: ret
+      changed_when: '"is already the newest version" not in ret.stdout'
+
+    - name: add docker's official GPG key
+      apt_key: url=https://download.docker.com/linux/ubuntu/gpg id=0EBFCD88
+
+    - name: check repository is already added or not
+      shell: cat /etc/apt/sources.list | grep -F "{{ docker_repo }}"
+      register: ret
+      ignore_errors: yes
+      changed_when: no
+
+    - name: add repository to install docker
+      shell: add-apt-repository "{{ docker_repo }}"
+      when: ret.rc != 0
+
+    - name: install docker
+      apt: name=docker-ce update_cache=yes
+
+    # install docker-compose
+    # @see https://docs.docker.com/compose/install/
+    - name: install docker-compose
+      shell: curl -L "https://github.com/docker/compose/releases/download/1.11.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+      args:
+        creates: /usr/local/bin/docker-compose
+
+    - name: chmod docker-compose
+      file: path=/usr/local/bin/docker-compose mode=u+x,g+x,a+x
+
+    # set and run nginx-proxy
+    - name: mkdir -p ~/nginx-proxy/certs
+      file: path="~/nginx-proxy/certs" state=directory
+      become: yes
+      become_method: su
+      become_user: "{{ user }}"
+
+    - name: set nginx-proxy
+      template: src=templates/docker-compose.yml dest="~/nginx-proxy"
+      become: yes
+      become_method: su
+      become_user: "{{ user }}"
+
+    - name: run nginx-proxy
+#      docker_service: project_src="/home/{{ user }}/nginx-proxy" # ansible 2.1+ only
+      shell: "cd /home/{{ user }}/nginx-proxy && docker-compose up -d"
+      register: ret
+      changed_when: '"is up-to-date" not in ret.stderr'
+
+    # set swapfile
+    - name: create swapfile
+      shell: dd if=/dev/zero of=/swapfile bs=200M count=20
+      register: ret
+      args:
+        creates: /swapfile
+
+    - name: chmod swapfile
+      file: path=/swapfile mode=600
+      when: ret|changed
+
+    - name: enable swapfile
+      shell: mkswap /swapfile && swapon /swapfile
+      when: ret|changed
