@@ -1,10 +1,15 @@
 - hosts: all
   gather_facts: no
   vars:
-    user: ubuntu
     docker_repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable
+    docker_compose_version: 1.11.2
+    user: ubuntu
+    ssh_pub_key: ~/.ssh/id_rsa.pub
 
   tasks:
+    - name: apt-get update && apt-get upgrade
+      apt: upgrade=dist update_cache=yes
+
     - name: install packages
       apt: name="{{ item }}" update_cache=yes
       with_items:
@@ -13,14 +18,6 @@
         - git
         - unzip
         - composer
-
-    - name: create user
-      user: name="{{ user }}" shell=/bin/bash groups=sudo password="{{ lookup('pipe', 'php generate_password_hash.php') }}"
-
-    - name: authorize local ssh-key for user
-      authorized_key:
-        user: "{{ user }}"
-        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
 
     # install docker
     # @see https://docs.docker.com/engine/installation/linux/ubuntu/
@@ -59,10 +56,26 @@
     - name: install docker
       apt: name=docker-ce update_cache=yes
 
+    # post-installation steps
+    # @see https://docs.docker.com/engine/installation/linux/linux-postinstall/
+    - name: create docker group
+      group: name=docker
+
+    - name: create user
+      user: name="{{ user }}" shell=/bin/bash groups=sudo,docker password="{{ lookup('pipe', 'php generate_password_hash.php') }}"
+
+    - name: authorize local ssh-key for user
+      authorized_key:
+        user: "{{ user }}"
+        key: "{{ lookup('file', ssh_pub_key) }}"
+
+    - name: make docker to start on boot
+      systemd: name=docker state=started enabled=yes
+
     # install docker-compose
     # @see https://docs.docker.com/compose/install/
     - name: install docker-compose
-      shell: curl -L "https://github.com/docker/compose/releases/download/1.11.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+      shell: curl -L "https://github.com/docker/compose/releases/download/{{ docker_compose_version }}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
       args:
         creates: /usr/local/bin/docker-compose
 
